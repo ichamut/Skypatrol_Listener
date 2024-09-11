@@ -17,7 +17,7 @@ namespace Skypatrol_Listener
         public ConnectionPool()
         {
             // Obtener la cadena de conexión desde la variable de entorno
-            connectionString = Environment.GetEnvironmentVariable("DB_REMOTE_CONNECTION_STRING");
+            connectionString = Environment.GetEnvironmentVariable("DB_CONNECTION_STRING");
 
             if (string.IsNullOrEmpty(connectionString))
             {
