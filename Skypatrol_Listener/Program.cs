@@ -10,9 +10,13 @@ namespace Skypatrol_Listener
 {
         public class Program
     {
-        public static async Task Main(string[] args)
+        public static async Task Main()
         {
-            Listener listener = new Listener(8900); // Puerto configurado
+            
+            ConsoleLogger logger = new ConsoleLogger(8900, Listener.clients);
+            Listener listener = new Listener(8900, logger); // Crea el Listener
+            logger.Start(); // Inicia la actualización de la cabecera
+
             await listener.StartListening();
         }
     }

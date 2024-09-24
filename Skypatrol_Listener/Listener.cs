@@ -8,12 +8,14 @@ using System.Net.Sockets;
 using System.Net;
 using System.Text;
 using System.Threading.Tasks;
+using System.Threading;
 using System.IO;
 using System.Data;
 using System.Globalization;
 using System.Diagnostics;
 using System.Reflection;
 using System.Runtime.Remoting.Messaging;
+using Skypatrol_Listener.Skypatrol_Listener;
 
 namespace Skypatrol_Listener
 {
@@ -21,13 +23,17 @@ namespace Skypatrol_Listener
     {
         private readonly int port;
         private readonly TcpListener tcpListener;
-        private HashSet<string> imeisHabilitados;
-        private static readonly ConcurrentDictionary<int, TcpClient> clients = new ConcurrentDictionary<int, TcpClient>();
+        private readonly HashSet<string> imeisHabilitados;
+        public static readonly ConcurrentDictionary<int, TcpClient> clients = new ConcurrentDictionary<int, TcpClient>();
         private static readonly ConnectionPool connectionPool = new ConnectionPool();
         private DateTime lastCommandCheckTime = DateTime.MinValue; // Marca de tiempo para la última verificación de comando
-        public Listener(int port)
+        private readonly ConsoleLogger _logger;
+        public long totalTramas = 0;
+
+        public Listener(int port, ConsoleLogger logger)
         {
             this.port = port;
+            this._logger = logger;  // Logger inyectado
             tcpListener = new TcpListener(IPAddress.Any, port);
             imeisHabilitados = new HashSet<string>();
         }
@@ -35,22 +41,34 @@ namespace Skypatrol_Listener
         {
             tcpListener.Start();
             await CargarImeisHabilitados();
-            Console.WriteLine($"Listening on port {port}...");
+            //Console.WriteLine($"Listening on port {port}...");
 
             // Agregar cliente al diccionario concurrente
             while (true)
             {
-                var client = await tcpListener.AcceptTcpClientAsync();
-                int clientId = Math.Abs(client.Client.RemoteEndPoint.GetHashCode());
-                // Agregar cliente al diccionario concurrente
-                if (clients.TryAdd(clientId, client))
+                try
                 {
-                    // Ejecutar HandleClient en un nuevo Task para manejar la conexión de forma concurrente
-                    _ = Task.Run(() => HandleClient(clientId));
+                    var client = await tcpListener.AcceptTcpClientAsync();
+                    int clientId = Math.Abs(client.Client.RemoteEndPoint.GetHashCode());
+
+                    if (clients.TryAdd(clientId, client))
+                    {
+                        _ = Task.Run(() => HandleClient(clientId));
+                    }
+                    else
+                    {
+                        _logger.LogEvent($"Error añadiendo cliente {clientId}. Ya existe.");
+                    }
                 }
-                else
+                catch (ObjectDisposedException)
                 {
-                    Console.WriteLine($"Error añadiendo cliente {clientId}. Ya existe.");
+                    _logger.LogEvent("Listener detenido.");
+                    break; // Salir del bucle si el Listener fue detenido
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogEvent($"Error inesperado en StartListening: {ex.Message}");
+                    break;
                 }
             }
         }
@@ -72,7 +90,7 @@ namespace Skypatrol_Listener
                 }
             }
 
-            Console.WriteLine($"Se han cargado {imeisHabilitados.Count} IMEIs habilitados en memoria.");
+            //Console.WriteLine($"Se han cargado {imeisHabilitados.Count} IMEIs habilitados en memoria.");
         }
         private bool VerificarImei(string imei)
         {
@@ -103,7 +121,7 @@ namespace Skypatrol_Listener
         {
             if (!clients.TryGetValue(clientId, out var client))
             {
-                Console.WriteLine($"Cliente {clientId} no encontrado al intentar manejar la conexión.");
+                _logger.LogEvent($"Cliente {clientId} no encontrado al intentar manejar la conexión.");
                 return;
             }
 
@@ -115,7 +133,7 @@ namespace Skypatrol_Listener
                 byte[] buffer = new byte[4096];
                 int bytesRead;
 
-                Console.WriteLine($"Cliente {clientId} conectado. Conexiones activas: {clients.Count}");
+                _logger.LogEvent($"Cliente {clientId} conectado. Conexiones activas: {clients.Count}");
 
                 DateTime lastActivityTime = DateTime.UtcNow;
                 TimeSpan timeoutPeriod = TimeSpan.FromMinutes(25);
@@ -130,7 +148,7 @@ namespace Skypatrol_Listener
                             if ((DateTime.UtcNow - lastActivityTime) > timeoutPeriod)
                             {
                                 DesconectarCliente(clientId);
-                                Console.WriteLine($"Cliente {clientId} desconectado por inactividad. Conexiones activas: {clients.Count}");
+                                _logger.LogEvent($"Cliente {clientId} desconectado por inactividad. Conexiones activas: {clients.Count}");
                                 break; // Salir del bucle si el cliente ha estado inactivo demasiado tiempo
                             }
 
@@ -154,25 +172,25 @@ namespace Skypatrol_Listener
                         }
                         else
                         {
-                            Console.WriteLine($"Cliente {clientId} desconectado inesperadamente. Conexiones activas: {clients.Count - 1}");
+                            _logger.LogEvent($"Cliente {clientId} desconectado inesperadamente. Conexiones activas: {clients.Count - 1}");
                             break;
                         }
                     }
                     catch (IOException ex) when (ex.InnerException is SocketException socketEx)
                     {
-                        Console.WriteLine($"Error de Socket: {socketEx.Message}. Cliente {clientId} desconectado inesperadamente.");
+                        _logger.LogEvent($"Error de Socket: {socketEx.Message}. Cliente {clientId} desconectado inesperadamente.");
                         break;
                     }
                 }
             }
             catch (ObjectDisposedException)
             {
-                Console.WriteLine($"Intento de acceso a un objeto desechado para el cliente {clientId}. Ignorando excepción.");
+                _logger.LogEvent($"Intento de acceso a un objeto desechado para el cliente {clientId}. Ignorando excepción.");
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"Error inesperado: {ex.Message}. Cliente {clientId} desconectado.");
-                Console.WriteLine($"Detalles del error inesperado: {ex.StackTrace}");
+                _logger.LogEvent($"Error inesperado: {ex.Message}. Cliente {clientId} desconectado.");
+                _logger.LogEvent($"Detalles del error inesperado: {ex.StackTrace}");
             }
             finally
             {
@@ -180,7 +198,7 @@ namespace Skypatrol_Listener
                 networkStream?.Close();
                 clientRemoved?.Close();
 
-                Console.WriteLine($"Cliente {clientId} desconectado. Conexiones activas: {clients.Count}");
+                _logger.LogEvent($"Cliente {clientId} desconectado. Conexiones activas: {clients.Count}");
             }
         }
 
@@ -194,12 +212,17 @@ namespace Skypatrol_Listener
                     {
                         try
                         {
+                            // Forzar el cierre TCP enviando una señal de cierre
+                            client.Client.Shutdown(SocketShutdown.Both);
                             client.Close(); // Intenta cerrar la conexión
-                            Console.WriteLine($"Cliente {clientId} desconectado correctamente.");
+                        }
+                        catch (SocketException ex) when (ex.SocketErrorCode == SocketError.ConnectionReset)
+                        {
+                            _logger.LogEvent($"El cliente {clientId} cerró la conexión de forma abrupta.");
                         }
                         catch (Exception ex)
                         {
-                            Console.WriteLine($"Error al cerrar la conexión para el cliente {clientId}: {ex.Message}");
+                            _logger.LogEvent($"Error al cerrar la conexión para el cliente {clientId}: {ex.Message}");
                         }
                     }
                     clients.TryRemove(clientId, out _); // Remueve el cliente de la lista de clientes activos
@@ -207,11 +230,11 @@ namespace Skypatrol_Listener
             }
             catch (ObjectDisposedException)
             {
-                Console.WriteLine($"Intento de acceso a un objeto desechado al desconectar el cliente {clientId}. Ignorando excepción.");
+                _logger.LogEvent($"Intento de acceso a un objeto desechado al desconectar el cliente {clientId}. Ignorando excepción.");
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"Error inesperado al intentar desconectar el cliente {clientId}: {ex.Message}");
+                _logger.LogEvent($"Error inesperado al intentar desconectar el cliente {clientId}: {ex.Message}");
             }
         }
         private async Task ProcessData(byte[] data, int clientId)
@@ -229,7 +252,7 @@ namespace Skypatrol_Listener
                     // Verificar si el IMEI está habilitado
                     if (!VerificarImei(imei_correcto) && (tipoComando != "05"))
                     {
-                        Console.WriteLine($"IMEI no habilitado: {imei}. Desconectando cliente {clientId}. IMEI de respuesta: {imei_trama_respuesta}.");
+                        _logger.LogEvent($"IMEI no habilitado: {imei}. Desconectando cliente {clientId}. IMEI de respuesta: {imei_trama_respuesta}.");
                         // Desconectar al cliente no autorizado
                         DesconectarCliente(clientId);
                         return; // Ignorar procesamiento adicional
@@ -243,7 +266,9 @@ namespace Skypatrol_Listener
                     {
                         string largoTrama = Utilidades.AsignaVariables2(data, inicio, 2, 3);
                         string numApi = Utilidades.AsignaVariables2(data, inicio + 2, 2, 3);
-
+                        // Incrementa el contador de tramas
+                        totalTramas++;
+                        _logger.GetTramasPerMinute(totalTramas);
                         switch (tipoComando)
                         {
                             case "02":
@@ -301,7 +326,7 @@ namespace Skypatrol_Listener
         }
         private async Task HandlePositionMessage(byte[] data, SqlConnection connection, int clientId, int inicio, string largoTrama)
         {
-            ComandosHandler config = new ComandosHandler(connection, clients, this);//Para consultar comandos pendientes y gestionar respuestas de ubicación
+            ComandosHandler config = new ComandosHandler(connection, clients, this, _logger);//Para consultar comandos pendientes y gestionar respuestas de ubicación
             int correccion = 0;
             int mascara = Convert.ToInt32(Utilidades.AsignaVariables2(data, inicio + 7, 4, 4), 16);
 
@@ -352,7 +377,7 @@ namespace Skypatrol_Listener
                     DateTime t = DateTime.Now.AddHours(7);
                     // Construir el comando
                     string comando = $"AT$TTRTCTI=,{t:yy},{t:MM},{t:dd},{t:HH},{t:mm},{t:ss}";
-                    await Utilidades.MandarComando(clientId, comando, clients, this);
+                    await Utilidades.MandarComando(clientId, comando, clients, this, _logger);
                 }
 
                 return; // Equivalente al GoTo Fin_Funcion
@@ -499,7 +524,7 @@ namespace Skypatrol_Listener
                 }
 
                 // Ejecutar la lógica de comandos
-                ComandosHandler config = new ComandosHandler(connection, clients, this);
+                ComandosHandler config = new ComandosHandler(connection, clients, this, _logger);
                 await config.Ejecutar(comando, respuestaSinIntro, clientId, port, imei);
             }
 
@@ -533,12 +558,12 @@ namespace Skypatrol_Listener
             catch (SqlException sqlEx)
             {
                 // Manejar excepciones específicas de SQL
-                Console.WriteLine($"SQL Error: {sqlEx.Message}");
+                _logger.LogEvent($"SQL Error: {sqlEx.Message}");
             }
             catch (Exception ex)
             {
                 // Manejar otras excepciones generales
-                Console.WriteLine($"General Error: {ex.Message}");
+                _logger.LogEvent($"General Error: {ex.Message}");
             }
         }
     }

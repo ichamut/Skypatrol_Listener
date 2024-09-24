@@ -10,6 +10,7 @@ using System.Threading.Tasks;
 using System.Collections.Concurrent;
 using System.IO;
 using Skypatrol_Listener;
+using Skypatrol_Listener.Skypatrol_Listener;
 
 namespace Skypatrol_Listener
 {
@@ -95,7 +96,7 @@ namespace Skypatrol_Listener
         {
             return int.Parse(fechaHora.Substring(0, 4)) > DateTime.Now.Year - 2 ? fechaHora : (object)DBNull.Value;
         }
-        public static async Task MandarComando(int clientId, string comando, ConcurrentDictionary<int, TcpClient> clients, Listener listener)
+        public static async Task MandarComando(int clientId, string comando, ConcurrentDictionary<int, TcpClient> clients, Listener listener, ConsoleLogger logger)
         {
             try
             {
@@ -121,23 +122,23 @@ namespace Skypatrol_Listener
                         NetworkStream stream = client.GetStream();
                         await stream.WriteAsync(tramaEnviar, 0, tramaEnviar.Length);
 
-                        Console.WriteLine($"Comando enviado al cliente {clientId}: {comando}");
+                        logger.LogEvent($"Comando enviado al cliente {clientId}: {comando}");
                     }
                     else
                     {
-                        Console.WriteLine($"Cliente {clientId} ya no está conectado.");
+                        logger.LogEvent($"No se puede enviar comando, el cliente {clientId} ya no está conectado.");
                         listener.DesconectarCliente(clientId);
                     }
                 }
             }
             catch (IOException ex)
             {
-                Console.WriteLine($"Error enviando comando al cliente {clientId}: {ex.Message}");
+                logger.LogEvent($"Error enviando comando al cliente {clientId}: {ex.Message}");
                 listener.DesconectarCliente(clientId);
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"Error enviando comando al cliente {clientId}: {ex.Message}");
+                logger.LogEvent($"Error enviando comando al cliente {clientId}: {ex.Message}");
                 listener.DesconectarCliente(clientId);
             }
         }

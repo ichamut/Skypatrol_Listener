@@ -1,4 +1,5 @@
 ﻿using Skypatrol_Listener;
+using Skypatrol_Listener.Skypatrol_Listener;
 using System;
 using System.Collections.Concurrent;
 using System.Data.SqlClient;
@@ -9,15 +10,17 @@ using System.Threading.Tasks;
 
     public class ComandosHandler
 {
-    private SqlConnection _connection;
-    private ConcurrentDictionary<int, TcpClient> _clients;
-    private Listener _listener;
+    private readonly SqlConnection _connection;
+    private readonly ConcurrentDictionary<int, TcpClient> _clients;
+    private readonly Listener _listener;
+    private readonly ConsoleLogger _logger;
 
-    public ComandosHandler(SqlConnection connection, ConcurrentDictionary<int, TcpClient> clients, Listener listener)
+    public ComandosHandler(SqlConnection connection, ConcurrentDictionary<int, TcpClient> clients, Listener listener, ConsoleLogger logger)
     {
         _connection = connection ?? throw new ArgumentNullException(nameof(connection));
         _clients = clients ?? throw new ArgumentNullException(nameof(clients));
         _listener = listener ?? throw new ArgumentNullException(nameof(listener));
+        _logger = logger ?? throw new ArgumentNullException(nameof(logger));
     }
     public async Task Ejecutar(string codigoComando, string trama, int conexIndex, int port, string imei)
     {
@@ -64,23 +67,23 @@ using System.Threading.Tasks;
                 {
                     while (await reader.ReadAsync())
                     {
-                        await Utilidades.MandarComando(reader.GetInt32(1), reader.GetString(0), _clients, _listener);
+                        await Utilidades.MandarComando(reader.GetInt32(1), reader.GetString(0), _clients, _listener, _logger);
                     }
                 }
             }
         }
         catch (SqlException ex)
         {
-            Console.WriteLine($"Error SQL en ComandosHandler: {ex.Message}");
+            _logger.LogEvent($"Error SQL en ComandosHandler: {ex.Message}");
             // Aquí podrías agregar lógica para manejar el error, como registrar en una tabla de errores.
         }
         catch (InvalidOperationException ex)
         {
-            Console.WriteLine($"Operación inválida en ComandosHandler: {ex.Message}");
+            _logger.LogEvent($"Operación inválida en ComandosHandler: {ex.Message}");
         }
         catch (Exception ex)
         {
-            Console.WriteLine($"Error inesperado en ComandosHandler: {ex.Message}");
+            _logger.LogEvent($"Error inesperado en ComandosHandler: {ex.Message}");
         }
     }
 }

@@ -13,6 +13,7 @@ namespace Skypatrol_Listener
     {
         private readonly ConcurrentBag<SqlConnection> connections = new ConcurrentBag<SqlConnection>();
         private readonly string connectionString;
+        private readonly ConsoleLogger _logger;
 
         public ConnectionPool()
         {
@@ -46,13 +47,13 @@ namespace Skypatrol_Listener
             catch (SqlException ex)
             {
                 // Log del error de conexión
-                Console.WriteLine($"Error al obtener la conexión de la base de datos: {ex.Message}");
+                _logger.LogEvent($"Error al obtener la conexión de la base de datos: {ex.Message}");
                 throw new InvalidOperationException("No se pudo establecer una conexión con la base de datos.", ex);
             }
             catch (Exception ex)
             {
                 // Log de cualquier otro tipo de error inesperado
-                Console.WriteLine($"Error inesperado al obtener la conexión: {ex.Message}");
+                _logger.LogEvent($"Error inesperado al obtener la conexión: {ex.Message}");
                 throw; // Propaga la excepción para que el llamador la maneje
             }
         }
