@@ -13,7 +13,6 @@ namespace Skypatrol_Listener
     {
         private readonly ConcurrentBag<SqlConnection> connections = new ConcurrentBag<SqlConnection>();
         private readonly string connectionString;
-        private readonly ConsoleLogger _logger;
 
         public ConnectionPool()
         {
@@ -25,7 +24,7 @@ namespace Skypatrol_Listener
                 throw new InvalidOperationException("La cadena de conexión no se ha configurado en la variable de entorno.");
             }
         }
-        public async Task<SqlConnection> GetConnection()
+        public async Task<SqlConnection> GetConnection(ConsoleLogger logger)
         {
             try
             {
@@ -47,13 +46,13 @@ namespace Skypatrol_Listener
             catch (SqlException ex)
             {
                 // Log del error de conexión
-                _logger.LogEvent($"Error al obtener la conexión de la base de datos: {ex.Message}");
+                logger.LogEvent($"Error al obtener la conexión de la base de datos: {ex.Message}");
                 throw new InvalidOperationException("No se pudo establecer una conexión con la base de datos.", ex);
             }
             catch (Exception ex)
             {
                 // Log de cualquier otro tipo de error inesperado
-                _logger.LogEvent($"Error inesperado al obtener la conexión: {ex.Message}");
+                logger.LogEvent($"Error inesperado al obtener la conexión: {ex.Message}");
                 throw; // Propaga la excepción para que el llamador la maneje
             }
         }

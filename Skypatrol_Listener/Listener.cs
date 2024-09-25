@@ -75,7 +75,7 @@ namespace Skypatrol_Listener
         private async Task CargarImeisHabilitados()
         {
 
-            using (var connection = await connectionPool.GetConnection())
+            using (var connection = await connectionPool.GetConnection(_logger))
             {
                 using (SqlCommand cmd = new SqlCommand("select imei from avl where id_avl_modelo in (select id_avl_modelo from avl_modelo where fabricante = 'Skypatrol')", connection))
                 {
@@ -104,7 +104,7 @@ namespace Skypatrol_Listener
             // Obtener la fecha y hora actual en Argentina
             DateTime fechaHoraArgentina = TimeZoneInfo.ConvertTime(DateTime.Now, argentinaTimeZone);
 
-            using (var connection = await connectionPool.GetConnection())
+            using (var connection = await connectionPool.GetConnection(_logger))
             {
                 using (SqlCommand cmd = new SqlCommand(
                         "INSERT INTO tramas_skypatrol (fecha_hora_sistema, imei, Trama) VALUES (@FechaHora, @imei, @Trama)", connection))
@@ -239,7 +239,7 @@ namespace Skypatrol_Listener
         }
         private async Task ProcessData(byte[] data, int clientId)
         {
-            using (var connection = await connectionPool.GetConnection())
+            using (var connection = await connectionPool.GetConnection(_logger))
             {
                 try
                 {
