@@ -72,6 +72,29 @@ namespace Skypatrol_Listener
                 }
             }
         }
+        // Método para detener el listener antes de reiniciar
+        public void StopListener()
+        {
+            try
+            {
+                _logger.LogEvent("Deteniendo el listener...");
+
+                // Cerrar todos los clientes conectados
+                foreach (var clientId in clients.Keys)
+                {
+                    DesconectarCliente(clientId);
+                }
+
+                // Detener el listener para liberar el puerto
+                tcpListener.Stop();
+                _logger.LogEvent("Listener detenido y recursos liberados.");
+            }
+            catch (Exception ex)
+            {
+                _logger.LogEvent($"Error al detener el listener: {ex.Message}");
+            }
+        }
+
         private async Task CargarImeisHabilitados()
         {
 
@@ -148,7 +171,7 @@ namespace Skypatrol_Listener
                             if ((DateTime.UtcNow - lastActivityTime) > timeoutPeriod)
                             {
                                 DesconectarCliente(clientId);
-                                _logger.LogEvent($"Cliente {clientId} desconectado por inactividad. Conexiones activas: {clients.Count}");
+                                //_logger.LogEvent($"Cliente {clientId} desconectado por inactividad. Conexiones activas: {clients.Count}");
                                 break; // Salir del bucle si el cliente ha estado inactivo demasiado tiempo
                             }
 
@@ -172,7 +195,7 @@ namespace Skypatrol_Listener
                         }
                         else
                         {
-                            _logger.LogEvent($"Cliente {clientId} desconectado inesperadamente. Conexiones activas: {clients.Count - 1}");
+                            //_logger.LogEvent($"Cliente {clientId} desconectado inesperadamente. Conexiones activas: {clients.Count - 1}");
                             break;
                         }
                     }
