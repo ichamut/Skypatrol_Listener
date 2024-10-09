@@ -18,6 +18,11 @@ namespace Skypatrol_Listener
     {
         public static string AsignaVariables2(byte[] vector, int indexDesde, int largo, int salida)
         {
+            if (indexDesde < 0 || indexDesde >= vector.Length || indexDesde + largo > vector.Length)
+            {
+                // Retornar un mensaje de error o vacío si los índices están fuera de rango
+                return string.Empty;
+            }
             StringBuilder result = new StringBuilder();
             for (int i = indexDesde; i < indexDesde + largo; i++)
             {
