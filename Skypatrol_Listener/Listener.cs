@@ -156,7 +156,7 @@ namespace Skypatrol_Listener
                 byte[] buffer = new byte[4096];
                 int bytesRead;
 
-                _logger.LogEvent($"Cliente {clientId} conectado. Conexiones activas: {clients.Count}");
+                //_logger.LogEvent($"Cliente {clientId} conectado. Conexiones activas: {clients.Count}");
 
                 DateTime lastActivityTime = DateTime.UtcNow;
                 TimeSpan timeoutPeriod = TimeSpan.FromMinutes(25);
@@ -201,7 +201,7 @@ namespace Skypatrol_Listener
                     }
                     catch (IOException ex) when (ex.InnerException is SocketException socketEx)
                     {
-                        _logger.LogEvent($"Error de Socket: {socketEx.Message}. Cliente {clientId} desconectado inesperadamente.");
+                        //_logger.LogEvent($"Error de Socket: {socketEx.Message}. Cliente {clientId} desconectado inesperadamente.");
                         break;
                     }
                 }
@@ -221,7 +221,7 @@ namespace Skypatrol_Listener
                 networkStream?.Close();
                 clientRemoved?.Close();
 
-                _logger.LogEvent($"Cliente {clientId} desconectado. Conexiones activas: {clients.Count}");
+                //_logger.LogEvent($"Cliente {clientId} desconectado. Conexiones activas: {clients.Count}");
             }
         }
 
@@ -515,11 +515,21 @@ namespace Skypatrol_Listener
         }
         private async Task HandleCommandResponse(byte[] data, SqlConnection connection, int clientId, string imei, string largoTrama)
         {
-            //caraj soluciona los problemas de listener cuando llegaba una trama y una resp de ubicación en la misma trama
-            if (Convert.ToInt32(Utilidades.AsignaVariables2(data, 7, 4, 3)) == 34 || Convert.ToInt32(Utilidades.AsignaVariables2(data, 11, 4, 3)) == 34)
+            // Verificar si la conversión es válida
+            // Inicializamos result1 y result2 con un valor predeterminado
+            int result1 = 0;
+            int result2 = 0;
+            if (int.TryParse(Utilidades.AsignaVariables2(data, 7, 4, 3), out result1) || int.TryParse(Utilidades.AsignaVariables2(data, 11, 4, 3), out result2))
             {
-                await HandlePositionMessage(data, connection, clientId, 0, largoTrama);
-                return;
+                if (result1 == 34 || result2 == 34)
+                {
+                    await HandlePositionMessage(data, connection, clientId, 0, largoTrama);
+                    return;
+                }
+            }
+            else
+            {
+                _logger.LogEvent($"Error: No se pudo convertir parte de la trama a entero en el cliente {clientId}.");
             }
 
 
