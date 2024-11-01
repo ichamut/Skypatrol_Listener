@@ -29,6 +29,7 @@ namespace Skypatrol_Listener
         private DateTime lastCommandCheckTime = DateTime.MinValue; // Marca de tiempo para la última verificación de comando
         private readonly ConsoleLogger _logger;
         public long totalTramas = 0;
+        private bool comandosActivos;
 
         public Listener(int port, ConsoleLogger logger)
         {
@@ -41,6 +42,8 @@ namespace Skypatrol_Listener
         {
             tcpListener.Start();
             await CargarImeisHabilitados();
+            comandosActivos = await EstadoFuncionEnvioComando(port); //pregunta si la funcion de envío de comandos está activa
+            _logger.LogEvent($"Envío de comandos: {comandosActivos}.");
             //Console.WriteLine($"Listening on port {port}...");
 
             // Agregar cliente al diccionario concurrente
@@ -51,14 +54,17 @@ namespace Skypatrol_Listener
                     var client = await tcpListener.AcceptTcpClientAsync();
                     int clientId = Math.Abs(client.Client.RemoteEndPoint.GetHashCode());
 
-                    if (clients.TryAdd(clientId, client))
+                    // Intentar agregar el cliente con el clientId inicial
+                    while (!clients.TryAdd(clientId, client))
                     {
-                        _ = Task.Run(() => HandleClient(clientId));
+                        //_logger.LogEvent($"Cliente con clientId {clientId} ya existe. Generando nuevo ID...");
+
+                        // Generar un nuevo clientId alternativo y asegurar que sea positivo
+                        clientId = Math.Abs(clientId + 1);
                     }
-                    else
-                    {
-                        _logger.LogEvent($"Error añadiendo cliente {clientId}. Ya existe.");
-                    }
+
+                    //_logger.LogEvent($"Cliente {clientId} añadido exitosamente.");
+                    _ = Task.Run(() => HandleClient(clientId)); // Maneja el cliente en una tarea independiente
                 }
                 catch (ObjectDisposedException)
                 {
@@ -94,7 +100,28 @@ namespace Skypatrol_Listener
                 _logger.LogEvent($"Error al detener el listener: {ex.Message}");
             }
         }
+        private async Task<bool> EstadoFuncionEnvioComando(int port)
+        {
+            bool comandosActivos = false; // Inicializa en `false` por defecto
 
+            using (var connection = await connectionPool.GetConnection(_logger))
+            {
+                using (SqlCommand cmd = new SqlCommand("select ComandosActivos from puertos_sistema where Puerto=@port", connection))
+                {
+                    cmd.Parameters.AddWithValue("@port", port); // Parámetro de consulta SQL seguro
+
+                    using (SqlDataReader reader = await cmd.ExecuteReaderAsync())
+                    {
+                        if (await reader.ReadAsync()) // Lee solo un registro
+                        {
+                            comandosActivos = reader.GetBoolean(0); // Asigna el valor bit directamente a la variable booleana
+                        }
+                    }
+                }
+            }
+
+            return comandosActivos; // Retorna el valor booleano de la columna `ComandosActivos`
+        }
         private async Task CargarImeisHabilitados()
         {
 
@@ -159,7 +186,7 @@ namespace Skypatrol_Listener
                 //_logger.LogEvent($"Cliente {clientId} conectado. Conexiones activas: {clients.Count}");
 
                 DateTime lastActivityTime = DateTime.UtcNow;
-                TimeSpan timeoutPeriod = TimeSpan.FromMinutes(25);
+                TimeSpan timeoutPeriod = TimeSpan.FromMinutes(20);
 
                 while (true)
                 {
@@ -241,7 +268,7 @@ namespace Skypatrol_Listener
                         }
                         catch (SocketException ex) when (ex.SocketErrorCode == SocketError.ConnectionReset)
                         {
-                            _logger.LogEvent($"El cliente {clientId} cerró la conexión de forma abrupta.");
+                            //_logger.LogEvent($"El cliente {clientId} cerró la conexión de forma abrupta.");
                         }
                         catch (Exception ex)
                         {
@@ -480,11 +507,14 @@ namespace Skypatrol_Listener
                     cmd.Parameters.AddWithValue("@altura", altitud.Replace(',', '.'));
                     await cmd.ExecuteNonQueryAsync();
                 }
-                // Aquí consulto e intento enviar los comandos pendientes
-                if ((DateTime.UtcNow - lastCommandCheckTime).TotalSeconds >= 5) // Verificar si han pasado 5 segundos
+                // Aquí consulto e intento enviar los comandos pendientes si la funcion está activa en la tabla puertos_sistema, columna ComandosActivos
+                if ((DateTime.UtcNow - lastCommandCheckTime).TotalSeconds >= 10) // Verificar si han pasado 10 segundos
                 {
-                    await config.Ejecutar("", "", clientId, port, imei); // Consultar comandos pendientes
-                    lastCommandCheckTime = DateTime.UtcNow; // Actualizar el tiempo de la última verificación
+                    if (comandosActivos)
+                    {
+                        await config.Ejecutar("", "", clientId, port, imei); // Consultar comandos pendientes
+                        lastCommandCheckTime = DateTime.UtcNow; // Actualizar el tiempo de la última verificación
+                    }
                 }
             }
             else
@@ -510,7 +540,10 @@ namespace Skypatrol_Listener
                     await cmdUpdateUbicacion.ExecuteNonQueryAsync();
                 }
                 //Actualizo la respuesta del rastreador en tabla comandos_pendientes
-                await config.Ejecutar(comandoCodigo, Utilidades.AsignaVariables2(data, inicio, Convert.ToInt32(largoTrama), 4), clientId, port, imei);
+                if (comandosActivos)//Aquí no estoy seguro de que deba ir este if ya que supuestamente debe gestionar la respuesta del rastreador, aunque sospecho que también envía comandos
+                {
+                    await config.Ejecutar(comandoCodigo, Utilidades.AsignaVariables2(data, inicio, Convert.ToInt32(largoTrama), 4), clientId, port, imei);
+                }
             }
         }
         private async Task HandleCommandResponse(byte[] data, SqlConnection connection, int clientId, string imei, string largoTrama)

@@ -40,11 +40,22 @@ public class ConsoleLogger
     {
         lock (consoleLock)
         {
-            // Mueve el cursor a la fila de logs (logRow) sin sobreescribir la cabecera
-            Console.SetCursorPosition(0, logRow++);
             DateTime fechaHoraArgentina = TimeZoneInfo.ConvertTime(DateTime.Now, argentinaTimeZone);
             message = message.EndsWith("\n") ? message : message + "\n";
-            Console.WriteLine($"[{fechaHoraArgentina}]: {message}.");
+            message = $"[{fechaHoraArgentina}]: {message}.";
+
+            // Ajustar el ancho máximo de cada línea al tamaño del buffer de la consola
+            int maxLineWidth = Console.BufferWidth - 1;
+
+
+            // Dividir el mensaje en varias líneas si excede el ancho de la consola
+            for (int i = 0; i < message.Length; i += maxLineWidth)
+            {
+                string line = message.Substring(i, Math.Min(maxLineWidth, message.Length - i));
+                // Mueve el cursor a la fila de logs (logRow) sin sobreescribir la cabecera
+                Console.SetCursorPosition(0, logRow++);
+                Console.WriteLine(line);
+            }
 
             // Limpiar si logRow llega al final de la pantalla
             if (logRow >= Console.WindowHeight - 2)
