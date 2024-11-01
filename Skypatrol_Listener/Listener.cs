@@ -251,40 +251,25 @@ namespace Skypatrol_Listener
                 //_logger.LogEvent($"Cliente {clientId} desconectado. Conexiones activas: {clients.Count}");
             }
         }
-
         public void DesconectarCliente(int clientId)
         {
-            try
+            if (clients.TryGetValue(clientId, out TcpClient tcpClient))
             {
-                if (clients.TryGetValue(clientId, out TcpClient client))
+                try
                 {
-                    if (client.Connected) // Verifica si el cliente está conectado antes de cerrar
-                    {
-                        try
-                        {
-                            // Forzar el cierre TCP enviando una señal de cierre
-                            client.Client.Shutdown(SocketShutdown.Both);
-                            client.Close(); // Intenta cerrar la conexión
-                        }
-                        catch (SocketException ex) when (ex.SocketErrorCode == SocketError.ConnectionReset)
-                        {
-                            //_logger.LogEvent($"El cliente {clientId} cerró la conexión de forma abrupta.");
-                        }
-                        catch (Exception ex)
-                        {
-                            _logger.LogEvent($"Error al cerrar la conexión para el cliente {clientId}: {ex.Message}");
-                        }
-                    }
-                    clients.TryRemove(clientId, out _); // Remueve el cliente de la lista de clientes activos
+                    // Intenta cerrar la conexión del cliente
+                    tcpClient?.GetStream()?.Close();
+                    tcpClient?.Close();
                 }
-            }
-            catch (ObjectDisposedException)
-            {
-                _logger.LogEvent($"Intento de acceso a un objeto desechado al desconectar el cliente {clientId}. Ignorando excepción.");
-            }
-            catch (Exception ex)
-            {
-                _logger.LogEvent($"Error inesperado al intentar desconectar el cliente {clientId}: {ex.Message}");
+                catch (Exception ex)
+                {
+                    _logger.LogEvent($"Error al cerrar el cliente {clientId}: {ex.Message}");
+                }
+                finally
+                {
+                    // Elimina el cliente del diccionario y libera el recurso
+                    clients.TryRemove(clientId, out _);
+                }
             }
         }
         private async Task ProcessData(byte[] data, int clientId)
