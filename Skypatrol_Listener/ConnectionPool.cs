@@ -28,20 +28,14 @@ namespace Skypatrol_Listener
         {
             try
             {
-                if (connections.TryTake(out var connection))
+                if (connections.TryTake(out var connection) && connection?.State == System.Data.ConnectionState.Open)
                 {
-                    if (connection.State == System.Data.ConnectionState.Open)
-                        return connection;
+                    return connection;
+                }
 
-                    await connection.OpenAsync();  // Intenta abrir la conexión si estaba cerrada
-                    return connection;
-                }
-                else
-                {
-                    connection = new SqlConnection(connectionString);
-                    await connection.OpenAsync();  // Abre una nueva conexión
-                    return connection;
-                }
+                connection = new SqlConnection(connectionString);
+                await connection.OpenAsync();
+                return connection;
             }
             catch (SqlException ex)
             {
@@ -54,6 +48,13 @@ namespace Skypatrol_Listener
                 // Log de cualquier otro tipo de error inesperado
                 logger.LogEvent($"Error inesperado al obtener la conexión: {ex.Message}");
                 throw; // Propaga la excepción para que el llamador la maneje
+            }
+        }
+        public void ReturnConnection(SqlConnection connection)
+        {
+            if (connection != null)
+            {
+                connections.Add(connection);
             }
         }
     }
