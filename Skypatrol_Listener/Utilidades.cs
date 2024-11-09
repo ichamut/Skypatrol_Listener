@@ -120,30 +120,24 @@ namespace Skypatrol_Listener
                 // Copiar los bytes del comando al array de tramaEnviar
                 Array.Copy(comandoBytes, 0, tramaEnviar, 7, comandoBytes.Length);
 
-                if (clients.TryGetValue(clientId, out TcpClient client))
+                if (clients.TryGetValue(clientId, out TcpClient client) && client.Connected && client.GetStream().CanWrite)
                 {
-                    if (client.Connected)
-                    {
-                        NetworkStream stream = client.GetStream();
-                        await stream.WriteAsync(tramaEnviar, 0, tramaEnviar.Length);
-
-                        logger.LogEvent($"Comando enviado al cliente {clientId}: {comando}");
-                    }
-                    else
-                    {
-                        logger.LogEvent($"No se puede enviar comando, el cliente {clientId} ya no está conectado.");
-                        listener.DesconectarCliente(clientId);
-                    }
+                    await client.GetStream().WriteAsync(tramaEnviar, 0, tramaEnviar.Length);
+                }
+                else
+                {
+                    //logger.LogEvent($"No se puede enviar comando, el cliente {clientId} ya no está conectado.");
+                    listener.DesconectarCliente(clientId);
                 }
             }
             catch (IOException ex)
             {
-                logger.LogEvent($"Error enviando comando al cliente {clientId}: {ex.Message}");
+                //logger.LogEvent($"Error enviando comando al cliente {clientId}: {ex.Message}");
                 listener.DesconectarCliente(clientId);
             }
             catch (Exception ex)
             {
-                logger.LogEvent($"Error enviando comando al cliente {clientId}: {ex.Message}");
+                //logger.LogEvent($"Error enviando comando al cliente {clientId}: {ex.Message}");
                 listener.DesconectarCliente(clientId);
             }
         }

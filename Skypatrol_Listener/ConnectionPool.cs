@@ -11,7 +11,7 @@ namespace Skypatrol_Listener
 {
     public class ConnectionPool
     {
-        private readonly ConcurrentBag<SqlConnection> connections = new ConcurrentBag<SqlConnection>();
+        //private readonly ConcurrentBag<SqlConnection> connections = new ConcurrentBag<SqlConnection>();
         private readonly string connectionString;
 
         public ConnectionPool()
@@ -28,12 +28,8 @@ namespace Skypatrol_Listener
         {
             try
             {
-                if (connections.TryTake(out var connection) && connection?.State == System.Data.ConnectionState.Open)
-                {
-                    return connection;
-                }
-
-                connection = new SqlConnection(connectionString);
+                // Crear y abrir una nueva conexión cada vez que se solicita
+                var connection = new SqlConnection(connectionString);
                 await connection.OpenAsync();
                 return connection;
             }
@@ -54,7 +50,16 @@ namespace Skypatrol_Listener
         {
             if (connection != null)
             {
-                connections.Add(connection);
+                try
+                {
+                    connection.Close();
+                    connection.Dispose();
+                }
+                catch (Exception ex)
+                {
+                    // Log de cualquier error al cerrar la conexión
+                    Console.WriteLine($"Error al cerrar la conexión: {ex.Message}");
+                }
             }
         }
     }

@@ -103,8 +103,8 @@ namespace Skypatrol_Listener
         private async Task<bool> EstadoFuncionEnvioComando(int port)
         {
             bool comandosActivos = false; // Inicializa en `false` por defecto
-
-            using (var connection = await connectionPool.GetConnection(_logger))
+            var connection = await connectionPool.GetConnection(_logger);
+            try
             {
                 using (SqlCommand cmd = new SqlCommand("select ComandosActivos from puertos_sistema where Puerto=@port", connection))
                 {
@@ -119,13 +119,16 @@ namespace Skypatrol_Listener
                     }
                 }
             }
-
+            finally
+            {
+                connectionPool.ReturnConnection(connection); // Devolver la conexión
+            }
             return comandosActivos; // Retorna el valor booleano de la columna `ComandosActivos`
         }
         private async Task CargarImeisHabilitados()
         {
-
-            using (var connection = await connectionPool.GetConnection(_logger))
+            var connection = await connectionPool.GetConnection(_logger);
+            try
             {
                 using (SqlCommand cmd = new SqlCommand("select imei from avl where id_avl_modelo in (select id_avl_modelo from avl_modelo where fabricante = 'Skypatrol')", connection))
                 {
@@ -139,7 +142,10 @@ namespace Skypatrol_Listener
                     }
                 }
             }
-
+            finally
+            {
+                connectionPool.ReturnConnection(connection); // Devolver la conexión
+            }
             //Console.WriteLine($"Se han cargado {imeisHabilitados.Count} IMEIs habilitados en memoria.");
         }
         private bool VerificarImei(string imei)
@@ -148,22 +154,36 @@ namespace Skypatrol_Listener
         }
         private async Task GuardarTramaEnBD(long? imei, byte[] receivedData)
         {
+            int retryCount = 0;
             // Definir el huso horario de Argentina
             TimeZoneInfo argentinaTimeZone = TimeZoneInfo.FindSystemTimeZoneById("Argentina Standard Time");
-
             // Obtener la fecha y hora actual en Argentina
             DateTime fechaHoraArgentina = TimeZoneInfo.ConvertTime(DateTime.Now, argentinaTimeZone);
-
-            using (var connection = await connectionPool.GetConnection(_logger))
+            while (retryCount < 3)
             {
-                using (SqlCommand cmd = new SqlCommand(
-                        "INSERT INTO tramas_skypatrol (fecha_hora_sistema, imei, Trama) VALUES (@FechaHora, @imei, @Trama)", connection))
+                var connection = await connectionPool.GetConnection(_logger);
+                try
                 {
-                    cmd.Parameters.AddWithValue("@FechaHora", fechaHoraArgentina);
-                    cmd.Parameters.AddWithValue("@imei", imei.HasValue ? imei : (object)DBNull.Value);
-                    cmd.Parameters.AddWithValue("@Trama", receivedData);
+                    using (SqlCommand cmd = new SqlCommand(
+                            "INSERT INTO tramas_skypatrol (fecha_hora_sistema, imei, Trama) VALUES (@FechaHora, @imei, @Trama)", connection))
+                    {
+                        cmd.Parameters.AddWithValue("@FechaHora", fechaHoraArgentina);
+                        cmd.Parameters.AddWithValue("@imei", imei.HasValue ? imei : (object)DBNull.Value);
+                        cmd.Parameters.AddWithValue("@Trama", receivedData);
 
-                    await cmd.ExecuteNonQueryAsync();
+                        await cmd.ExecuteNonQueryAsync();
+                    }
+                    break; // Transacción exitosa, salir del bucle
+                }
+                catch (SqlException ex) when (ex.Number == 1205) // Código de deadlock
+                {
+                    retryCount++;
+                    _logger.LogEvent($"Deadlock en GuardarTramaEnBD. Reintento {retryCount}/3...");
+                    await Task.Delay(500);
+                }
+                finally
+                {
+                    connectionPool.ReturnConnection(connection); // Devolver la conexión
                 }
             }
         }
@@ -171,84 +191,63 @@ namespace Skypatrol_Listener
         {
             if (!clients.TryGetValue(clientId, out var client))
             {
-                _logger.LogEvent($"Cliente {clientId} no encontrado al intentar manejar la conexión.");
+                _logger.LogEvent($"Cliente {clientId} no encontrado.");
                 return;
             }
 
-            NetworkStream networkStream = null;
+            NetworkStream networkStream = client.GetStream();
+            byte[] buffer = new byte[4096];
+            DateTime lastActivityTime = DateTime.UtcNow;
+            TimeSpan timeoutPeriod = TimeSpan.FromMinutes(20); // Tiempo límite de inactividad
 
             try
             {
-                networkStream = client.GetStream();
-                byte[] buffer = new byte[4096];
-                int bytesRead;
-
-                //_logger.LogEvent($"Cliente {clientId} conectado. Conexiones activas: {clients.Count}");
-
-                DateTime lastActivityTime = DateTime.UtcNow;
-                TimeSpan timeoutPeriod = TimeSpan.FromMinutes(20);
-
                 while (true)
                 {
-                    try
+                    if ((DateTime.UtcNow - lastActivityTime) > timeoutPeriod)
                     {
-                        if (!networkStream.DataAvailable) // Verificar si hay datos disponibles
-                        {
-                            // Verificar tiempo de espera por inactividad
-                            if ((DateTime.UtcNow - lastActivityTime) > timeoutPeriod)
-                            {
-                                DesconectarCliente(clientId);
-                                //_logger.LogEvent($"Cliente {clientId} desconectado por inactividad. Conexiones activas: {clients.Count}");
-                                break; // Salir del bucle si el cliente ha estado inactivo demasiado tiempo
-                            }
-
-                            await Task.Delay(1000); // Espera un segundo antes de verificar de nuevo
-                            continue; // Continúa con la próxima iteración
-                        }
-
-                        bytesRead = await networkStream.ReadAsync(buffer, 0, buffer.Length);
+                        // Cliente inactivo por más del tiempo límite; desconectar
+                        //_logger.LogEvent($"Cliente {clientId} desconectado por inactividad.");
+                        DesconectarCliente(clientId);
+                        break;
+                    }
+                    if (networkStream.DataAvailable)
+                    {
+                        int bytesRead = await networkStream.ReadAsync(buffer, 0, buffer.Length);
 
                         if (bytesRead > 0)
                         {
-                            if (!clients.ContainsKey(clientId))
-                                break; // Cliente ya fue desconectado, salir del bucle
-
-                            lastActivityTime = DateTime.UtcNow; // Actualiza el tiempo de la última actividad
+                            lastActivityTime = DateTime.UtcNow; // Actualiza el tiempo de última actividad
                             byte[] receivedData = new byte[bytesRead];
                             Array.Copy(buffer, receivedData, bytesRead);
 
-                            // Proceso la trama y guardo
+                            // Procesa la información recibida
                             await ProcessData(receivedData, clientId);
                         }
                         else
                         {
-                            //_logger.LogEvent($"Cliente {clientId} desconectado inesperadamente. Conexiones activas: {clients.Count - 1}");
+                            // Cliente cerró la conexión voluntariamente
+                            _logger.LogEvent($"Cliente {clientId} se ha desconectado.");
                             break;
                         }
                     }
-                    catch (IOException ex) when (ex.InnerException is SocketException socketEx)
-                    {
-                        //_logger.LogEvent($"Error de Socket: {socketEx.Message}. Cliente {clientId} desconectado inesperadamente.");
-                        break;
-                    }
+                    // Espera un tiempo antes de la próxima verificación de actividad
+                    await Task.Delay(1000);
                 }
             }
-            catch (ObjectDisposedException)
+            catch (IOException)
             {
-                _logger.LogEvent($"Intento de acceso a un objeto desechado para el cliente {clientId}. Ignorando excepción.");
+                //_logger.LogEvent($"Error de conexión. Cliente {clientId} desconectado.");
             }
             catch (Exception ex)
             {
-                _logger.LogEvent($"Error inesperado: {ex.Message}. Cliente {clientId} desconectado.");
-                _logger.LogEvent($"Detalles del error inesperado: {ex.StackTrace}");
+                //_logger.LogEvent($"Error inesperado: {ex.Message}. Cliente {clientId} desconectado.");
             }
             finally
             {
-                clients.TryRemove(clientId, out var clientRemoved);
+                clients.TryRemove(clientId, out _);
                 networkStream?.Close();
-                clientRemoved?.Close();
-
-                //_logger.LogEvent($"Cliente {clientId} desconectado. Conexiones activas: {clients.Count}");
+                client.Close();
             }
         }
         public void DesconectarCliente(int clientId)
@@ -257,9 +256,15 @@ namespace Skypatrol_Listener
             {
                 try
                 {
-                    // Intenta cerrar la conexión del cliente
-                    tcpClient?.GetStream()?.Close();
-                    tcpClient?.Close();
+                    if (tcpClient.Connected)
+                    {
+                        var stream = tcpClient.GetStream();
+                        if (stream.CanRead || stream.CanWrite)
+                        {
+                            stream.Close();
+                        }
+                        tcpClient.Close();
+                    }
                 }
                 catch (Exception ex)
                 {
@@ -274,7 +279,8 @@ namespace Skypatrol_Listener
         }
         private async Task ProcessData(byte[] data, int clientId)
         {
-            using (var connection = await connectionPool.GetConnection(_logger))
+            var connection = await connectionPool.GetConnection(_logger);
+            try
             {
                 try
                 {
@@ -287,7 +293,7 @@ namespace Skypatrol_Listener
                     // Verificar si el IMEI está habilitado
                     if (!VerificarImei(imei_correcto) && (tipoComando != "05"))
                     {
-                        _logger.LogEvent($"IMEI no habilitado: {imei}. Desconectando cliente {clientId}. IMEI de respuesta: {imei_trama_respuesta}.");
+                        //_logger.LogEvent($"IMEI no habilitado: {imei}. Desconectando cliente {clientId}. IMEI de respuesta: {imei_trama_respuesta}.");
                         // Desconectar al cliente no autorizado
                         DesconectarCliente(clientId);
                         return; // Ignorar procesamiento adicional
@@ -345,18 +351,43 @@ namespace Skypatrol_Listener
                     await LogError(connection, ex.Message, clientId, Utilidades.ByteArrayToHex(data));
                 }
             }
+            finally
+            {
+                connectionPool.ReturnConnection(connection); // Devolver la conexión
+            }
         }
         private void HandleKeepAliveMessage(byte[] data, SqlConnection connection, int clientId, int inicio)
         {
             string imei = Utilidades.AsignaVariables2(data, inicio + 11, 22, 1).Trim();
-            // Lógica para actualizar la conexión en la base de datos
-            using (SqlCommand cmd = new SqlCommand("sp_update_index_actual", connection))
+            int retryCount = 0;
+            bool success = false;
+
+            while (!success && retryCount < 3)
             {
-                cmd.CommandType = System.Data.CommandType.StoredProcedure;
-                cmd.Parameters.AddWithValue("@Index", clientId);
-                cmd.Parameters.AddWithValue("@Puerto", port);
-                cmd.Parameters.AddWithValue("@Imei", imei);
-                cmd.ExecuteNonQuery();
+                try
+                {
+                    // Lógica para actualizar la conexión en la base de datos
+                    using (SqlCommand cmd = new SqlCommand("sp_update_index_actual", connection))
+                    {
+                        cmd.CommandType = System.Data.CommandType.StoredProcedure;
+                        cmd.Parameters.AddWithValue("@Index", clientId);
+                        cmd.Parameters.AddWithValue("@Puerto", port);
+                        cmd.Parameters.AddWithValue("@Imei", imei);
+                        cmd.ExecuteNonQuery();
+                    }
+                    success = true; // Transacción exitosa
+                }
+                catch (SqlException ex) when (ex.Number == 1205)
+                {
+                    retryCount++;
+                    _logger.LogEvent($"Deadlock en HandleKeepAliveMessage. Reintento {retryCount}/3...");
+                    Thread.Sleep(500); // Tiempo de espera sincrónico para evitar conflicto inmediato
+                }
+                catch (SqlException ex)
+                {
+                    _logger.LogEvent($"Error SQL en HandlePositionMessage: {ex.Message}");
+                    break; // Detener si no es un deadlock
+                }
             }
         }
         private async Task HandlePositionMessage(byte[] data, SqlConnection connection, int clientId, int inicio, string largoTrama)
@@ -461,37 +492,59 @@ namespace Skypatrol_Listener
 
             if (codigoEvento != "respuesta_ubicacion")
             {
-                // Ejecutar el procedimiento almacenado principal
-                using (SqlCommand cmd = new SqlCommand("sp_principal", connection))
+                int retryCount = 0;
+                bool success = false;
+
+                while (!success && retryCount < 3)
                 {
-                    cmd.CommandType = CommandType.StoredProcedure;
-                    cmd.Parameters.AddWithValue("@latitud_trama", latitud.Replace(',', '.'));
-                    cmd.Parameters.AddWithValue("@longitud_trama", longitud.Replace(',', '.'));
-                    cmd.Parameters.AddWithValue("@hora_satelite", Utilidades.ValidarFecha(fechaHoraGPS));
-                    cmd.Parameters.AddWithValue("@evento_sin_status", codigoEvento);
-                    cmd.Parameters.AddWithValue("@imei_hard", imei);
-                    cmd.Parameters.AddWithValue("@status_Hard", statusHard);
-                    cmd.Parameters.AddWithValue("@voltaje_avl", voltsBatInt);
-                    cmd.Parameters.AddWithValue("@voltaje_vehiculo", voltsBatExt.Replace(',', '.'));
-                    cmd.Parameters.AddWithValue("@velocidad", velocidad.Replace(',', '.'));
-                    cmd.Parameters.AddWithValue("@direcc", direccion.Replace(',', '.'));
-                    cmd.Parameters.AddWithValue("@tramas_recibidas", numTrama);
-                    cmd.Parameters.AddWithValue("@hdop", hdop);
-                    cmd.Parameters.AddWithValue("@kilometros", Kilometros.Replace(',', '.'));
-                    cmd.Parameters.AddWithValue("@ip", ipAvl);
-                    cmd.Parameters.AddWithValue("@conex", clientId);
-                    cmd.Parameters.AddWithValue("@puerto", port);
-                    cmd.Parameters.AddWithValue("@hora_AVL_de_trama", Utilidades.ValidarFecha(fechaHoraAVL));
-                    cmd.Parameters.AddWithValue("@voltaje1", AD1.Replace(',', '.'));
-                    cmd.Parameters.AddWithValue("@voltaje2", AD2.Replace(',', '.'));
-                    cmd.Parameters.AddWithValue("@voltaje_avl_agotado", voltajeAvlAgotado);
-                    cmd.Parameters.AddWithValue("@evento_original", EventoOriginal);
-                    cmd.Parameters.AddWithValue("@comando_ubicacion", comandoUbicacion);
-                    cmd.Parameters.AddWithValue("@comando_codigo", comandoCodigo);
-                    cmd.Parameters.AddWithValue("@gsm_signal", cantidadSatelites);
-                    cmd.Parameters.AddWithValue("@altura", altitud.Replace(',', '.'));
-                    await cmd.ExecuteNonQueryAsync();
+                    try
+                    {
+                        // Ejecutar el procedimiento almacenado principal
+                        using (SqlCommand cmd = new SqlCommand("sp_principal", connection))
+                        {
+                            cmd.CommandType = CommandType.StoredProcedure;
+                            cmd.Parameters.AddWithValue("@latitud_trama", latitud.Replace(',', '.'));
+                            cmd.Parameters.AddWithValue("@longitud_trama", longitud.Replace(',', '.'));
+                            cmd.Parameters.AddWithValue("@hora_satelite", Utilidades.ValidarFecha(fechaHoraGPS));
+                            cmd.Parameters.AddWithValue("@evento_sin_status", codigoEvento);
+                            cmd.Parameters.AddWithValue("@imei_hard", imei);
+                            cmd.Parameters.AddWithValue("@status_Hard", statusHard);
+                            cmd.Parameters.AddWithValue("@voltaje_avl", voltsBatInt);
+                            cmd.Parameters.AddWithValue("@voltaje_vehiculo", voltsBatExt.Replace(',', '.'));
+                            cmd.Parameters.AddWithValue("@velocidad", velocidad.Replace(',', '.'));
+                            cmd.Parameters.AddWithValue("@direcc", direccion.Replace(',', '.'));
+                            cmd.Parameters.AddWithValue("@tramas_recibidas", numTrama);
+                            cmd.Parameters.AddWithValue("@hdop", hdop);
+                            cmd.Parameters.AddWithValue("@kilometros", Kilometros.Replace(',', '.'));
+                            cmd.Parameters.AddWithValue("@ip", ipAvl);
+                            cmd.Parameters.AddWithValue("@conex", clientId);
+                            cmd.Parameters.AddWithValue("@puerto", port);
+                            cmd.Parameters.AddWithValue("@hora_AVL_de_trama", Utilidades.ValidarFecha(fechaHoraAVL));
+                            cmd.Parameters.AddWithValue("@voltaje1", AD1.Replace(',', '.'));
+                            cmd.Parameters.AddWithValue("@voltaje2", AD2.Replace(',', '.'));
+                            cmd.Parameters.AddWithValue("@voltaje_avl_agotado", voltajeAvlAgotado);
+                            cmd.Parameters.AddWithValue("@evento_original", EventoOriginal);
+                            cmd.Parameters.AddWithValue("@comando_ubicacion", comandoUbicacion);
+                            cmd.Parameters.AddWithValue("@comando_codigo", comandoCodigo);
+                            cmd.Parameters.AddWithValue("@gsm_signal", cantidadSatelites);
+                            cmd.Parameters.AddWithValue("@altura", altitud.Replace(',', '.'));
+                            await cmd.ExecuteNonQueryAsync();
+                        }
+                        success = true; // Transacción exitosa
+                    }
+                    catch (SqlException ex) when (ex.Number == 1205)
+                    {
+                        retryCount++;
+                        _logger.LogEvent($"Deadlock en HandlePositionMessage (sp_principal). Reintento {retryCount}/3...");
+                        await Task.Delay(500);
+                    }
+                    catch (SqlException ex)
+                    {
+                        _logger.LogEvent($"Error SQL en HandlePositionMessage (no Deadlock): {ex.Message}");
+                        break; // Detener si no es un deadlock
+                    }
                 }
+
                 // Aquí consulto e intento enviar los comandos pendientes si la funcion está activa en la tabla puertos_sistema, columna ComandosActivos
                 if ((DateTime.UtcNow - lastCommandCheckTime).TotalSeconds >= 10) // Verificar si han pasado 10 segundos
                 {
@@ -504,25 +557,46 @@ namespace Skypatrol_Listener
             }
             else
             {
-                using (SqlCommand cmdUpdateUbicacion = new SqlCommand("sp_update_ubicacion_actual", connection))
+                int retryCount = 0;
+                bool success = false;
+
+                while (!success && retryCount < 3)
                 {
-                    cmdUpdateUbicacion.CommandType = CommandType.StoredProcedure;
-                    cmdUpdateUbicacion.Parameters.AddWithValue("@latitud", latitud.Replace(',', '.'));
-                    cmdUpdateUbicacion.Parameters.AddWithValue("@longitud", longitud.Replace(',', '.'));
-                    cmdUpdateUbicacion.Parameters.AddWithValue("@hora_AVL", Utilidades.ValidarFecha(fechaHoraGPS));
-                    cmdUpdateUbicacion.Parameters.AddWithValue("@velocidad", velocidad.Replace(',', '.'));
-                    cmdUpdateUbicacion.Parameters.AddWithValue("@hdop", hdop);
-                    cmdUpdateUbicacion.Parameters.AddWithValue("@index", clientId);
-                    cmdUpdateUbicacion.Parameters.AddWithValue("@puerto", port);
-                    cmdUpdateUbicacion.Parameters.AddWithValue("@voltaje_avl", voltsBatInt);
-                    cmdUpdateUbicacion.Parameters.AddWithValue("@voltaje_vehiculo", voltsBatExt.Replace(',', '.'));
-                    cmdUpdateUbicacion.Parameters.AddWithValue("@gsm_signal", cantidadSatelites);
-                    cmdUpdateUbicacion.Parameters.AddWithValue("@altura", altitud.Replace(',', '.'));
-                    cmdUpdateUbicacion.Parameters.AddWithValue("@status_hard", statusHard);
-                    cmdUpdateUbicacion.Parameters.AddWithValue("@direcc", direccion.Replace(',', '.'));
-                    cmdUpdateUbicacion.Parameters.AddWithValue("@voltaje_sensor1", AD1.Replace(',', '.'));
-                    cmdUpdateUbicacion.Parameters.AddWithValue("@voltaje_sensor2", AD2.Replace(',', '.'));
-                    await cmdUpdateUbicacion.ExecuteNonQueryAsync();
+                    try
+                    {
+                        using (SqlCommand cmdUpdateUbicacion = new SqlCommand("sp_update_ubicacion_actual", connection))
+                        {
+                            cmdUpdateUbicacion.CommandType = CommandType.StoredProcedure;
+                            cmdUpdateUbicacion.Parameters.AddWithValue("@latitud", latitud.Replace(',', '.'));
+                            cmdUpdateUbicacion.Parameters.AddWithValue("@longitud", longitud.Replace(',', '.'));
+                            cmdUpdateUbicacion.Parameters.AddWithValue("@hora_AVL", Utilidades.ValidarFecha(fechaHoraGPS));
+                            cmdUpdateUbicacion.Parameters.AddWithValue("@velocidad", velocidad.Replace(',', '.'));
+                            cmdUpdateUbicacion.Parameters.AddWithValue("@hdop", hdop);
+                            cmdUpdateUbicacion.Parameters.AddWithValue("@index", clientId);
+                            cmdUpdateUbicacion.Parameters.AddWithValue("@puerto", port);
+                            cmdUpdateUbicacion.Parameters.AddWithValue("@voltaje_avl", voltsBatInt);
+                            cmdUpdateUbicacion.Parameters.AddWithValue("@voltaje_vehiculo", voltsBatExt.Replace(',', '.'));
+                            cmdUpdateUbicacion.Parameters.AddWithValue("@gsm_signal", cantidadSatelites);
+                            cmdUpdateUbicacion.Parameters.AddWithValue("@altura", altitud.Replace(',', '.'));
+                            cmdUpdateUbicacion.Parameters.AddWithValue("@status_hard", statusHard);
+                            cmdUpdateUbicacion.Parameters.AddWithValue("@direcc", direccion.Replace(',', '.'));
+                            cmdUpdateUbicacion.Parameters.AddWithValue("@voltaje_sensor1", AD1.Replace(',', '.'));
+                            cmdUpdateUbicacion.Parameters.AddWithValue("@voltaje_sensor2", AD2.Replace(',', '.'));
+                            await cmdUpdateUbicacion.ExecuteNonQueryAsync();
+                        }
+                        success = true; // Transacción exitosa
+                    }
+                    catch (SqlException ex) when (ex.Number == 1205)
+                    {
+                        retryCount++;
+                        _logger.LogEvent($"Deadlock en HandlePositionMessage (sp_update_ubicacion_actual). Reintento {retryCount}/3...");
+                        await Task.Delay(500);
+                    }
+                                        catch (SqlException ex)
+                    {
+                        _logger.LogEvent($"Error SQL en HandlePositionMessage (no Deadlock): {ex.Message}");
+                        break; // Detener si no es un deadlock
+                    }
                 }
                 //Actualizo la respuesta del rastreador en tabla comandos_pendientes
                 if (comandosActivos)//Aquí no estoy seguro de que deba ir este if ya que supuestamente debe gestionar la respuesta del rastreador, aunque sospecho que también envía comandos
@@ -595,13 +669,12 @@ namespace Skypatrol_Listener
                     using (SqlCommand cmd = new SqlCommand("sp_insert_error_log", connection))
                     {
                         cmd.CommandType = System.Data.CommandType.StoredProcedure;
-
-                        // Parámetros
-                        cmd.Parameters.AddWithValue("@comentario", comentario);
-                        cmd.Parameters.AddWithValue("@ip", GetRemoteIPAddress(clientId));
-                        cmd.Parameters.AddWithValue("@conex_index", clientId);
-                        cmd.Parameters.AddWithValue("@trama", trama);
-                        cmd.Parameters.AddWithValue("@puerto", port);
+                        // Parámetros con tamaño especificado para evitar truncamiento
+                        cmd.Parameters.Add(new SqlParameter("@comentario", SqlDbType.VarChar, -1) { Value = comentario });
+                        cmd.Parameters.Add(new SqlParameter("@ip", SqlDbType.VarChar, 50) { Value = GetRemoteIPAddress(clientId) });
+                        cmd.Parameters.Add(new SqlParameter("@conex_index", SqlDbType.Int) { Value = clientId });
+                        cmd.Parameters.Add(new SqlParameter("@trama", SqlDbType.VarChar, -1) { Value = trama });
+                        cmd.Parameters.Add(new SqlParameter("@puerto", SqlDbType.Int) { Value = port });
 
                         await cmd.ExecuteNonQueryAsync();
                     }
