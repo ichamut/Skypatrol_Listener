@@ -31,7 +31,7 @@ using System.Threading.Tasks;
         {
             try
             {
-                using (SqlCommand cmd = new SqlCommand("comandos_a_enviar", _connection))
+                using (SqlCommand cmd = new SqlCommand("sp_comandos", _connection))
                 {
                     cmd.CommandType = System.Data.CommandType.StoredProcedure;
 
