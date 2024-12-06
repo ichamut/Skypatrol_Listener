@@ -121,7 +121,7 @@ namespace Skypatrol_Listener
             }
             finally
             {
-                connectionPool.ReturnConnection(connection); // Devolver la conexión
+                connectionPool.ReturnConnection(connection, _logger); // Devolver la conexión
             }
             return comandosActivos; // Retorna el valor booleano de la columna `ComandosActivos`
         }
@@ -144,7 +144,7 @@ namespace Skypatrol_Listener
             }
             finally
             {
-                connectionPool.ReturnConnection(connection); // Devolver la conexión
+                connectionPool.ReturnConnection(connection, _logger); // Devolver la conexión
             }
             //Console.WriteLine($"Se han cargado {imeisHabilitados.Count} IMEIs habilitados en memoria.");
         }
@@ -183,7 +183,7 @@ namespace Skypatrol_Listener
                 }
                 finally
                 {
-                    connectionPool.ReturnConnection(connection); // Devolver la conexión
+                    connectionPool.ReturnConnection(connection, _logger); // Devolver la conexión
                 }
             }
         }
@@ -312,7 +312,7 @@ namespace Skypatrol_Listener
                         _logger.GetTramasPerMinute(totalTramas);
                         switch (tipoComando)
                         {
-                            case "02":
+                            case "02"://aparentemente por aquí no pasa nunca, revisar error_log con el contenido "Mensaje GPRS de skypatrol".
                                 await LogError(connection, "Mensaje GPRS de skypatrol", clientId, Utilidades.ByteArrayToHex(data));
                                 break;
 
@@ -353,7 +353,7 @@ namespace Skypatrol_Listener
             }
             finally
             {
-                connectionPool.ReturnConnection(connection); // Devolver la conexión
+                connectionPool.ReturnConnection(connection, _logger); // Devolver la conexión
             }
         }
         private void HandleKeepAliveMessage(byte[] data, SqlConnection connection, int clientId, int inicio)
@@ -386,6 +386,11 @@ namespace Skypatrol_Listener
                 catch (SqlException ex)
                 {
                     _logger.LogEvent($"Error SQL en HandlePositionMessage: {ex.Message}");
+                    break; // Detener si no es un deadlock
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogEvent($"Error en HandlePositionMessage: {ex.Message}");
                     break; // Detener si no es un deadlock
                 }
             }
@@ -434,16 +439,36 @@ namespace Skypatrol_Listener
                 fechaHoraAVL.Substring(2, 2) == "04" ||
                 fechaHoraAVL.Substring(2, 2) == "00")
             {
-                // Registrar el error
-                await LogError( connection, "Mando comando para corregir la Fecha y hora (Skypatrol-Trama 2011 o 2003) si EventoOriginal != 34: " + EventoOriginal, clientId, "IMEI: " + imei);
-                // Verificar condición adicional antes de enviar el comando
+                //Gestión para corregir la Fecha y hora (Skypatrol-Trama 2011 o 2003) si EventoOriginal != 34
                 if (EventoOriginal != "34")
                 {
-                    // Sumar 7 horas a la fecha y hora actual
-                    DateTime t = DateTime.Now.AddHours(7);
-                    // Construir el comando
-                    string comando = $"AT$TTRTCTI=,{t:yy},{t:MM},{t:dd},{t:HH},{t:mm},{t:ss}";
-                    await Utilidades.MandarComando(clientId, comando, clients, this, _logger);
+                    DateTime horaSolicitud = TimeZoneInfo.ConvertTime(DateTime.Now, TimeZoneInfo.FindSystemTimeZoneById("Argentina Standard Time"));
+                    horaSolicitud = horaSolicitud.AddHours(3); // Sumar 3 horas a la fecha y hora actual Argentina
+                    // Calcular el día de la semana (0 = Sunday, 1 = Monday, ..., 6 = Saturday)
+                    int diaSemana = (int)horaSolicitud.DayOfWeek;
+                    // Construir el comando, esto es para tener referencia en comandos_pendientes, se setea nuevamente al momento de enviar efectivamente el comando.
+                    string comando = $"AT$TTRTCTI={diaSemana},{horaSolicitud:yy},{horaSolicitud:MM},{horaSolicitud:dd},{horaSolicitud:HH},{horaSolicitud:mm},{horaSolicitud:ss}"; 
+                    string codigo = "OK";
+
+                    string query = @"INSERT INTO comandos_pendientes (comando, imei_hard, hora_solicitud, codigo) VALUES (@comando, @imeiHard, @hora_solicitud, @codigo);";
+                    horaSolicitud = horaSolicitud.AddHours(-3); //corrijo el horario de la solicitud ya que antes le sumé 3 horas.
+                    try
+                        {
+                            using (SqlCommand cmd = new SqlCommand(query, connection)) 
+                            {
+                                // Agregar parámetros
+                                cmd.Parameters.Add("@comando", SqlDbType.VarChar).Value = comando;
+                                cmd.Parameters.Add("@imeiHard", SqlDbType.VarChar).Value = imei;
+                                cmd.Parameters.Add("@hora_solicitud", SqlDbType.DateTime).Value = horaSolicitud;
+                                cmd.Parameters.Add("@codigo", SqlDbType.VarChar).Value = codigo;
+
+                                await cmd.ExecuteNonQueryAsync();
+                            }
+                        }
+                        catch (Exception ex)
+                        {
+                            _logger.LogEvent($"Error en 'Mando comando para corregir la Fecha y hora': {ex.Message}");
+                        }
                 }
 
                 return; // Equivalente al GoTo Fin_Funcion

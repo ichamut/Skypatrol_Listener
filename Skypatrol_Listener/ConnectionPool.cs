@@ -46,7 +46,7 @@ namespace Skypatrol_Listener
                 throw; // Propaga la excepción para que el llamador la maneje
             }
         }
-        public void ReturnConnection(SqlConnection connection)
+        public void ReturnConnection(SqlConnection connection, ConsoleLogger logger)
         {
             if (connection != null)
             {
@@ -58,7 +58,7 @@ namespace Skypatrol_Listener
                 catch (Exception ex)
                 {
                     // Log de cualquier error al cerrar la conexión
-                    Console.WriteLine($"Error al cerrar la conexión: {ex.Message}");
+                    logger.LogEvent($"Error al cerrar la conexión: {ex.Message}");
                 }
             }
         }

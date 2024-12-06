@@ -72,7 +72,15 @@ using System.Threading.Tasks;
                     {
                         while (await reader.ReadAsync())
                         {
-                            await Utilidades.MandarComando(reader.GetInt32(1), reader.GetString(0), _clients, _listener, _logger);
+                            string comando = reader.GetString(0);
+                            if (comando.StartsWith("AT$TTRTCTI=")) //para setear la hora correcta al momento del envío del comando de sincronización horaria
+                            {
+                                DateTime t = TimeZoneInfo.ConvertTime(DateTime.Now, TimeZoneInfo.FindSystemTimeZoneById("Argentina Standard Time"));
+                                t = t.AddHours(3); // Sumar 3 horas a la fecha y hora actual Argentina               
+                                int diaSemana = (int)t.DayOfWeek;// Calcular el día de la semana (0 = Sunday, 1 = Monday, ..., 6 = Saturday)
+                                comando = $"AT$TTRTCTI={diaSemana},{t:yy},{t:MM},{t:dd},{t:HH},{t:mm},{t:ss}"; // Se construye el comando
+                            }
+                            await Utilidades.MandarComando(reader.GetInt32(1), comando, _clients, _listener, _logger);
                         }
                     }
                 }
@@ -81,7 +89,7 @@ using System.Threading.Tasks;
             catch (SqlException ex) when (ex.Number == 1205) // Código de error para deadlock
             {
                 retryCount++;
-                _logger.LogEvent($"Error (Deadlock) SQL en ComandosHandler: {ex.Message}.");
+                _logger.LogEvent($"Error (Deadlock) SQL en ComandosHandler. Reintento {retryCount}/3...");
                 // Aquí podrías agregar lógica para manejar el error, como registrar en una tabla de errores.
                 await Task.Delay(500); // Espera antes de reintentar
             }
