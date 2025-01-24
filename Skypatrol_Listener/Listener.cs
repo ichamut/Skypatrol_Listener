@@ -417,7 +417,9 @@ namespace Skypatrol_Listener
             string velocidad = (Convert.ToDouble(Convert.ToInt32(Utilidades.AsignaVariables2(data, inicio + 51 + correccion, 2, 4), 16)) / 10 * 1.852).ToString();
 
             string direccion = (Convert.ToDouble(Convert.ToInt32(Utilidades.AsignaVariables2(data, inicio + 53 + correccion, 2, 4), 16)) / 10).ToString();
-            int voltsBatInt = (Convert.ToInt32(Utilidades.AsignaVariables2(data, inicio + 62 + correccion, 2, 3),16)) / 100;
+            double voltsBatInt = Convert.ToDouble(Utilidades.AsignaVariables2(data, inicio + 62 + correccion, 2, 3)) / 100.0;
+
+
             int hdop = gpsStatus == 1 ? 1 : 0;
             int cantidadSatelites = hdop == 1 ? Convert.ToInt32(Utilidades.AsignaVariables2(data, inicio + 61 + correccion, 1, 3)) : 0;
             int voltajeAvlAgotado = Convert.ToDouble(voltsBatInt) < 3.6 ? 1 : 0;
@@ -617,7 +619,7 @@ namespace Skypatrol_Listener
                         _logger.LogEvent($"Deadlock en HandlePositionMessage (sp_update_ubicacion_actual). Reintento {retryCount}/3...");
                         await Task.Delay(500);
                     }
-                                        catch (SqlException ex)
+                    catch (SqlException ex)
                     {
                         _logger.LogEvent($"Error SQL en HandlePositionMessage (no Deadlock): {ex.Message}");
                         break; // Detener si no es un deadlock
